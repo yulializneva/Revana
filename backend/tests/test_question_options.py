@@ -137,12 +137,16 @@ def test_legacy_saved_journey_stays_readable_without_options(agent):
 
 
 def test_generated_schema_requires_options_and_all_properties():
-    schema = GeneratedDecision.model_json_schema()
+    from app.agent_provider import strict_schema
+
+    schema = strict_schema(GeneratedDecision.model_json_schema())
     for model in [schema, *schema["$defs"].values()]:
         assert set(model.get("required", [])) == set(model.get("properties", {}))
         assert model["additionalProperties"] is False
     generated = schema["$defs"]["GeneratedQuestion"]
-    assert generated["properties"]["options"]["minItems"] == 1
+    assert (
+        "minItems" not in generated["properties"]["options"]
+    )  # Numeric/date controls need no choices.
     assert "maxItems" not in generated["properties"]["options"]
     assert "ALL recorded answers" in files("app").joinpath("prompts/coach.md").read_text()
 

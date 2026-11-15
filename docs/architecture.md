@@ -1,3 +1,7 @@
+> Current release: see [Goal workspace](GOAL_WORKSPACE.md). It supersedes the staged intake UI and first-plan orchestration below.
+
+> Current implementation (2026-11-11): see [Agentic coach](AGENTIC_COACH.md) for the LangGraph workflow, three-domain scope, restored question limits, unified workspace and validation boundaries. This supersedes conflicting historical notes below.
+
 > Current deployment update (2026-11-05): temporary public Vercel testing has been
 > explicitly approved. Hosted mode now requires Postgres, supports same-origin API
 > requests and preserves per-journey bearer access. Account sign-in and deployment

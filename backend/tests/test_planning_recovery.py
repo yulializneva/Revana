@@ -1,0 +1,208 @@
+"""Bounded planning latency and explicit retry without repeated intake/generation."""
+
+import pytest
+from fastapi import HTTPException
+from test_goal_workspace import create, run
+from test_goal_workspace import workspace as workspace_fixture
+
+from app import agent_provider, agent_store, workflow
+from app.agent_models import AssessmentDecision, ReviewResult, WorkspaceDraft
+from app.config import get_settings
+
+workspace = workspace_fixture
+
+
+def test_review_timeout_reuses_unchecked_draft_and_still_requires_review(workspace, monkeypatch):
+    client, calls = workspace
+    j, h, _ = create(client, "Improve dry skin")
+    original = agent_provider.generate
+    fail_review = True
+
+    def generate(task, context, output, **kwargs):
+        if output is ReviewResult and fail_review:
+            raise HTTPException(502, "Checking the plan took too long.")
+        return original(task, context, output, **kwargs)
+
+    monkeypatch.setattr(agent_provider, "generate", generate)
+    j, events = run(client, j, h)
+    assert events[-1]["type"] == "error"
+    checkpoint = j["workspace"]["review_draft"]
+    assert checkpoint and not j["proposal"] and not j["plans"]
+    assert j["workspace"]["assessment_complete"]
+    assert (
+        client.post("/v1/workspace/accept", headers=h, json={"revision": j["revision"]}).status_code
+        == 409
+    )
+    fail_review = False
+    j, events = run(client, j, h, action="retry")
+    assert events[-1]["type"] == "complete", events
+    assert len([task for task, _ in calls if task.startswith("[stage:planner]")]) == 1
+    assert j["proposal"]["actions"] == checkpoint["actions"]
+    assert j["workspace"]["review_draft"] is None
+    assert not j["plans"]
+
+
+def test_final_assessment_handoff_survives_planner_timeout(workspace, monkeypatch):
+    client, _ = workspace
+    j, h, token = create(client, "Improve dry skin")
+    saved = agent_store.read(token)
+    saved.workspace.question = None
+    saved.workspace.timeline_note = "8 weeks"
+    saved = agent_store.save(token, saved, saved.revision)
+    j = saved.model_dump(mode="json")
+    original = agent_provider.generate
+    seen = []
+    fail_plan = True
+
+    def generate(task, context, output, **kwargs):
+        seen.append(output)
+        if output is AssessmentDecision:
+            return AssessmentDecision(
+                reply="Enough context.", question=None, facts=[], conflicts=[]
+            )
+        if output is WorkspaceDraft and fail_plan:
+            raise HTTPException(502, "Building the plan took too long.")
+        return original(task, context, output, **kwargs)
+
+    monkeypatch.setattr(agent_provider, "generate", generate)
+    j, events = run(client, j, h, action="continue")
+    assert events[-1]["type"] == "error"
+    assert j["workspace"]["assessment_complete"] is True
+    fail_plan = False
+    j, events = run(client, j, h, action="retry")
+    assert events[-1]["type"] == "complete", events
+    assert seen.count(AssessmentDecision) == 1
+
+
+def test_role_budgets_respect_whole_run_deadline(monkeypatch):
+    get_settings.cache_clear()
+    assert get_settings().workflow_timeout_seconds == 270
+    captured = []
+    monkeypatch.setattr(
+        agent_provider,
+        "generate",
+        lambda task, context, output: captured.append(context["_stage_timeout"]),
+    )
+    token = workflow._deadline.set(None)
+    try:
+        for role in ("planner", "reviewer", "coach"):
+            workflow.stage(role, "test", {}, ReviewResult)
+        assert captured == [120, 60, 45]
+        monkeypatch.setattr(workflow, "monotonic", lambda: 100)
+        workflow._deadline.set(112)
+        workflow.stage("planner", "test", {}, ReviewResult)
+        assert captured[-1] == 12
+        workflow._deadline.set(101)
+        with pytest.raises(HTTPException):
+            workflow.stage("planner", "test", {}, ReviewResult)
+    finally:
+        workflow._deadline.reset(token)
+        get_settings.cache_clear()
+
+
+def test_one_continuous_timed_activity_needs_no_interset_rest(workspace):
+    from test_agent import example_plan
+
+    from app.agent_models import Exercise, WeeklyProgramme
+    from app.coaching_graph import plan_issues
+
+    client, _ = workspace
+    _, _, token = create(client, "Improve activity habits")
+    journey = agent_store.read(token)
+    draft = example_plan()
+    draft.programme = WeeklyProgramme(
+        weeks=4,
+        outcome="Comfortable activity",
+        deadline_assessment="Review tolerability.",
+        schedule_notes="Rest as needed.",
+        success_signals=["Comfort"],
+        review_rule="Review next week.",
+        training_included=True,
+    )
+    draft.actions[0].minutes = 10
+    draft.actions[0].exercises = [
+        Exercise(
+            name="Comfortable continuous walk",
+            sets=1,
+            duration_minutes=10,
+            instructions="Choose a comfortable route.",
+            easier_alternative="Shorten if needed.",
+            progression="Advance only if comfortable.",
+        )
+    ]
+    assert not plan_issues(journey, draft)
+    draft.actions[0].exercises[0].sets = 2
+    assert any("rest_seconds" in issue for issue in plan_issues(journey, draft))
+    draft.actions[0].exercises[0].sets = 1
+    draft.actions[0].exercises[0].duration_minutes = None
+    draft.actions[0].exercises[0].repetitions = "5 controlled repetitions"
+    assert any("rest_seconds" in issue for issue in plan_issues(journey, draft))
+
+
+def test_optional_prep_links_are_not_invented_or_a_whole_plan_failure():
+    from test_agent import example_plan
+
+    from app.agent_models import NutritionPlan, PrepSession
+    from app.coaching_graph import normalize_meal_links
+
+    draft = example_plan()
+    before = draft.actions[0].model_dump()
+    draft.nutrition = NutritionPlan(
+        focus="Lunch prep",
+        energy_strategy="balanced",
+        energy_explanation="Balanced meals",
+        meal_pattern="Meals",
+        portion_approach="Satisfying portions",
+        prep_sessions=[
+            PrepSession(
+                day=0,
+                minutes=10,
+                title="Prepare ingredients",
+                steps=["Prepare your ingredients."],
+                storage="Follow chilled-food guidance.",
+                meal_keys=["monday-lunch", "0-lunch"],
+            )
+        ],
+    )
+    normalize_meal_links(draft)
+    assert draft.nutrition.prep_sessions[0].meal_keys == []
+    assert draft.actions[0].model_dump() == before
+    assert draft.meals == []
+    assert any("could not be verified" in text for text in draft.uncertainties)
+
+
+def test_unmatched_optional_meal_links_do_not_block_reviewed_proposal(workspace, monkeypatch):
+    from app.agent_models import NutritionPlan, PrepSession
+
+    client, _ = workspace
+    j, h, _ = create(client, "Improve food preparation")
+    original = agent_provider.generate
+
+    def generate(task, context, output, **kwargs):
+        result = original(task, context, output, **kwargs)
+        if output is WorkspaceDraft:
+            result.nutrition = NutritionPlan(
+                focus="Prep",
+                energy_strategy="balanced",
+                energy_explanation="Balanced meals",
+                meal_pattern="Meals",
+                portion_approach="Satisfying portions",
+                prep_sessions=[
+                    PrepSession(
+                        day=0,
+                        minutes=10,
+                        title="Prepare ingredients",
+                        steps=["Prepare ingredients."],
+                        storage="Keep chilled.",
+                        meal_keys=["monday-lunch"],
+                    )
+                ],
+            )
+        return result
+
+    monkeypatch.setattr(agent_provider, "generate", generate)
+    j, events = run(client, j, h)
+    assert events[-1]["type"] == "complete", events
+    assert j["proposal"]["nutrition"]["prep_sessions"][0]["meal_keys"] == []
+    assert any("could not be verified" in text for text in j["proposal"]["uncertainties"])
+    assert not j["plans"]

@@ -1,11 +1,28 @@
 # Revana agent guidance
 
-Start with `docs/PRODUCT_ROADMAP.md`, `docs/architecture.md` and `docs/agent-roadmap.md`.
+Start with `docs/AGENTIC_COACH.md`, `docs/PRODUCT_ROADMAP.md`, `docs/architecture.md` and `docs/agent-roadmap.md`.
+
+## Current workspace (supersedes earlier layout guidance)
+
+Read `docs/GOAL_WORKSPACE.md` first. The user explicitly requested a goal-oriented
+Codex/VS Code-style workspace in place of staged intake. `frontend/src/GoalWorkspace.tsx`
+is the primary UI; `backend/app/goal_workspace.py` owns streamed work execution.
+Keep accepted plans visible during revisions. Persist a goal immediately, avoid repeated
+intake questions, expose real execution status and preserve cancellation/CAS guarantees.
+The earlier warm-layout and staged-flow descriptions below are historical context.
+Initial planning now uses `assessment.py` and prompts/assessment.md, with explicit goal/
+timeline capture, adaptive focused questions (at most six answered cards) and an early
+build option. There is NO three-habit limit. Weekly programmes must include actual
+scheduled sessions and criteria-based progression when training is relevant. Keep
+collapsed cards compact while preserving complete detail behind Show more. Boundaries
+on time, budget, unsupported clinical claims and unsafe weight targets still apply.
+
 
 ## Product goal
 
-Revana is an interactive beauty and lifestyle agent. Keep the current visual direction
-and direction -> goals -> understanding -> fit/safety -> analysis -> plan workflow.
+Revana is an interactive beauty and lifestyle agent. Keep the warm visual direction and focus -> understanding -> profile review -> plan workflow.
+The active workspace is Today, My plan, Coach and Profile. New goals are skin, hair
+and weight/body habits; other lifestyle factors are supporting context.
 The latest message drives the next response, with earlier context and safety constraints
 preserved. Questions adapt to every answer without a fixed cycle or option count. Users
 may skip or finish whenever ready. Separate explicit user reports, hypotheses and
@@ -94,3 +111,53 @@ completed, validated checkpoint to GitHub instead of batching unrelated work. St
 feature branches from updated main. A push does not authorize merging or deploying.
 Update current-state documentation as each slice lands, and distinguish synthetic
 validation from live-provider recommendation quality.
+
+## Agentic workflow update (2026-11-11)
+
+`app/coaching_graph.py` now runs bounded LangGraph graphs using the existing journey
+store at turn boundaries; external tracing is explicitly disabled. Keep six assessment
+questions and three follow-up questions, optional typed inputs, application-controlled
+budgets, proposals and revision checks. Do not restore unlimited-question behavior.
+`app/data/foods.json` is a limited attributed public snapshot; never invent missing
+nutrients or treat it as a complete allergen database. Milestones are review points,
+not validated personal predictions. See AGENTIC_COACH.md for current privacy limits.
+
+
+## Nutrition and methods discovery (2026-11-12)
+
+Food-first preferences must drive assessment and planning. Keep recipes, meal prep,
+portion guidance, substitutions and storage first-class alongside appropriate activity.
+Numeric calorie prescriptions remain disabled; ingredient estimates are not daily
+intake targets. Preserve BMI/unsafe-target safeguards and daily prep/activity budgets.
+See GOAL_WORKSPACE.md for exact eligibility and validation limits.
+
+`method_discovery.py` uses controlled generic topic/city queries, primary-domain evidence
+and separately labeled public Bokadirekt listings. Never include answers/photos/metrics
+in web queries, infer practitioner qualifications from listings, pretend searches ran,
+or silently apply researched procedures. Preserve previous review state, accepted plans,
+unique evidence IDs and run cancellation/revision checks. No scraping or booking.
+
+
+## Visual body goals (2026-11-12)
+
+Journey.body_goals stores explicit regional preferences, never measurements or clinical
+inferences. Saving uses bearer ownership/revision checks, no model call, preserves
+accepted history/assessment answers and invalidates older proposals/retry artifacts.
+Keep the optional map keyboard-accessible with text alternatives and mobile controls.
+All model stages receive these preferences through workflow.context_for. Do not infer
+fat percentage, metabolism, physiology or calorie needs from a silhouette, promise
+regional fat loss or silently replace an accepted plan. Measurements/progress trends
+and silhouette variants are later scope. See GOAL_WORKSPACE.md.
+
+
+## Performance boundaries (2026-11-12)
+
+Read docs/PERFORMANCE.md for current measurements and caveats. Keep provider-only compact
+formats separate from persisted/API plans: unique recipes expand losslessly; selected
+edits and corrections merge in application code before full independent review. Never
+trim clinical reports, fixed meal quantities/schedules or photo/answer provenance merely
+to shrink prompts. Numeric diagnostics must not contain prompts, keys, answers, provider
+text or private reasoning. Do not trade validation or cancellation/CAS for latency.
+Use scripts/benchmark_workspace.py --live deliberately with synthetic data only; compare
+successful operations and record provider variability instead of claiming an SLA from
+one run. The model and fail-safe timeouts remain unchanged.

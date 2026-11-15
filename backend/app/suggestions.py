@@ -43,13 +43,22 @@ def conversation_context(board: SuggestionBoard) -> list[dict]:
             "skipped": turn.skipped,
             "coach_reply": turn.reply,
         }
-        for turn in board.conversation
+        for turn in board.conversation[-6:]
     ]
 
 
 def generate_batch(journey: Journey, context: dict, request: SuggestionRequest) -> SuggestionBoard:
     workflow.begin(journey)
     board = board_for(journey).model_copy(deep=True)
+    if request.question_id and journey.checkin_count >= 3:
+        raise HTTPException(
+            409,
+            "This follow-up has reached three questions. Make a limited plan with what is known.",
+        )
+    if not request.question_id:
+        journey.checkin_count = 0
+    else:
+        journey.checkin_count += 1
     question = board.pending_question if request.question_id else None
     selected = []
     if request.question_id:
@@ -63,6 +72,11 @@ def generate_batch(journey: Journey, context: dict, request: SuggestionRequest) 
             question.selection_mode == "single" or any(option.exclusive for option in selected)
         ):
             raise HTTPException(422, "These options cannot be selected together.")
+        from app.coaching_tools import validate_question_answer
+
+        validate_question_answer(
+            question, request.message, request.skipped, request.selected_option_ids, []
+        )
     # Keep explicit suggestions distinct from user-reported facts and accepted plans.
     context.pop("suggestion_board", None)
     context.pop("action_exploration", None)
@@ -99,7 +113,7 @@ def generate_batch(journey: Journey, context: dict, request: SuggestionRequest) 
         "of the recommendations and uncertainty, never private chain-of-thought. If a "
         "missing fact would materially change the advice, ask one focused question with "
         "relevant selectable options, suitable single/multiple selection and optional text. "
-        "Let the number of options and successive turns follow the need; no fixed quota. "
+        f"Use 3–6 options and at most {3 - journey.checkin_count} further questions. Stop early if possible. "
         "Set photo_mode=none for coach questions. Do not re-ask known or skipped information. "
         "Offer practical alternative actions when enough is known, including more than "
         "three when the user wants breadth. actions may be empty when clarifying or simply "
@@ -118,6 +132,9 @@ def generate_batch(journey: Journey, context: dict, request: SuggestionRequest) 
     workflow.absorb(journey, coach, context)
     journey.research_intent = getattr(coach, "research", None)
     workflow.research(journey, journey.research_intent)
+    if journey.checkin_count >= 3:
+        coach.questions = []
+        coach.ready_for_plan = True
     ready = getattr(coach, "ready_for_plan", bool(coach.actions or not coach.questions))
     if ready:
         batch = workflow.plan(
@@ -179,6 +196,7 @@ def generate_batch(journey: Journey, context: dict, request: SuggestionRequest) 
     if board.pending_question:
         board.pending_question.id = uuid4().hex
         board.pending_question.photo_mode = "none"
+        board.pending_question.options = board.pending_question.options[:6]
         for option in board.pending_question.options:
             option.id = uuid4().hex
     return board

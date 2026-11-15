@@ -1,3 +1,18 @@
+> Visual body goals (2026-11-12): the first release implements a mobile front/back map,
+> regional intentions, overall direction and main priority, saved in the existing goal
+> and passed to assessment/planning/review. See [current behavior](GOAL_WORKSPACE.md#visual-body-goals--first-release-2026-11-12).
+> Next: optional measurements/trends and evaluated shape variants; no future-body predictions.
+
+> 2026-11-12 checkpoint: meal-first assessment, recipes/batch prep and optional cited
+> alternatives with public Bokadirekt listings are implemented. See
+> [current behavior and validation](GOAL_WORKSPACE.md#food-first-planning-and-researched-alternatives-2026-11-12).
+> Numerical calorie prescriptions, service booking and qualification verification are
+> not implemented. Next: recommendation evaluations and broader food/source coverage.
+
+> Current release: see [Goal workspace](GOAL_WORKSPACE.md). It supersedes the staged intake UI and first-plan orchestration below.
+
+> Current implementation (2026-11-11): see [Agentic coach](AGENTIC_COACH.md) for the LangGraph workflow, three-domain scope, restored question limits, unified workspace and validation boundaries. This supersedes conflicting historical notes below.
+
 > Current deployment update (2026-11-05): temporary public Vercel testing has been
 > explicitly approved. Hosted mode now requires Postgres, supports same-origin API
 > requests and preserves per-journey bearer access. Account sign-in and deployment

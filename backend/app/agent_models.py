@@ -1,10 +1,10 @@
 """Bounded contracts for the adaptive beauty-agent workflow."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class Model(BaseModel):
@@ -46,6 +46,21 @@ class Question(Model):
     options: list[AnswerOption] = Field(default_factory=list)
     selection_mode: Literal["single", "multiple"] = "multiple"
     photo_mode: Literal["none", "products", "skin", "hair"] = "none"
+    input_kind: Literal["options", "number", "date", "text"] = "options"
+    unit: Literal["kg", "cm", "years", "minutes", "SEK", ""] = ""
+    number_min: float | None = None
+    number_max: float | None = None
+    profile_key: (
+        Literal[
+            "age",
+            "height_cm",
+            "weight_kg",
+            "target_weight_kg",
+            "daily_minutes",
+            "monthly_budget_sek",
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def distinct_options(self):
@@ -65,7 +80,7 @@ class Decision(Model):
 
 class GeneratedQuestion(Question):
     # All output properties must be required for the strict provider schema.
-    options: list[AnswerOption] = Field(min_length=1)
+    options: list[AnswerOption] = Field(default_factory=list)
     selection_mode: Literal["single", "multiple"] = Field(...)
     photo_mode: Literal["none", "products", "skin", "hair"] = Field(...)
 
@@ -74,7 +89,17 @@ class GeneratedDecision(Decision):
     questions: list[GeneratedQuestion] = Field(max_length=1)
 
 
-FactCategory = Literal["goal", "allergy", "limitation", "preference"]
+FactCategory = Literal[
+    "goal",
+    "allergy",
+    "limitation",
+    "preference",
+    "concern",
+    "routine",
+    "measurement",
+    "observation",
+    "health_context",
+]
 FactStatus = Literal["reported", "hypothesis", "unknown", "needs_review"]
 
 
@@ -95,6 +120,9 @@ class ProfileFact(Model):
     quote: str
     status: FactStatus
     active: bool = True
+    updated_at: datetime | None = None
+    confirmed: bool = False
+    source_kind: Literal["report", "visual_observation"] = "report"
 
 
 class ProfileEdit(Model):
@@ -147,6 +175,10 @@ class RevisionRequest(Model):
     revision: int = Field(ge=0)
 
 
+class AcceptRequest(RevisionRequest):
+    confirm_profile: bool = False
+
+
 class FitOptions(Model):
     options: list[str]
     limitations_hint: str = Field(min_length=1, max_length=300)
@@ -184,6 +216,7 @@ class PhotoNotesRequest(RevisionRequest):
 
 class PlanRequest(RevisionRequest):
     preferences: Preferences
+    confirm_profile: bool = False
 
 
 class CheckInRequest(RevisionRequest):
@@ -236,20 +269,206 @@ class PlanFeedback(Model):
     created_at: datetime
 
 
+class Exercise(Model):
+    name: str = Field(min_length=1, max_length=100)
+    sets: int | None = Field(default=None, ge=1, le=10)
+    repetitions: str = Field(default="", max_length=80)
+    duration_minutes: int | None = Field(default=None, ge=1, le=180)
+    rest_seconds: int | None = Field(default=None, ge=0, le=600)
+    instructions: str = Field(min_length=1, max_length=2000)
+    form_cues: list[str] = Field(default_factory=list, max_length=6)
+    progression: str = Field(default="", max_length=1200)
+    easier_alternative: str = Field(min_length=1, max_length=300)
+
+
+class ProgressionStep(Model):
+    week: int = Field(ge=1, le=52)
+    instruction: str = Field(min_length=1, max_length=2000)
+    advance_when: str = Field(min_length=1, max_length=1000)
+    if_difficult: str = Field(min_length=1, max_length=1000)
+
+
 class Action(Model):
     id: str = Field(min_length=1, max_length=80)
     category: str = Field(min_length=1, max_length=80)
     title: str = Field(min_length=1, max_length=150)
-    detail: str = Field(min_length=1, max_length=1000)
+    detail: str = Field(min_length=1, max_length=8000)
     why: str = Field(min_length=1, max_length=1000)
     timing: str = Field(min_length=1, max_length=300)
     cost: str = Field(min_length=1, max_length=200)
     effort: str = Field(min_length=1, max_length=100)
     observation: str = Field(min_length=1, max_length=500)
+    minutes: int | None = Field(default=None, ge=0, le=240)
+    monthly_cost_sek: float | None = Field(default=None, ge=0, le=100000)
+    days: list[int] = Field(default_factory=lambda: list(range(7)), max_length=7)
+    time_of_day: Literal["morning", "midday", "evening", "flexible"] = "flexible"
+    exercises: list[Exercise] = Field(default_factory=list, max_length=12)
+    progression: list[ProgressionStep] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def valid_days(self):
+        weeks = [step.week for step in self.progression]
+        if weeks != sorted(set(weeks)):
+            raise ValueError("Use distinct progression weeks in chronological order.")
+        if any(day not in range(7) for day in self.days) or len(set(self.days)) != len(self.days):
+            raise ValueError("Use distinct weekday numbers from zero to six.")
+        return self
+
+
+class Milestone(Model):
+    day: int = Field(ge=1, le=84)
+    label: Literal["Observe", "Review", "Too early to assess", "Seek assessment"]
+    description: str = Field(min_length=1, max_length=400)
+    assumptions: str = Field(max_length=400)
+
+
+class BodyContext(Model):
+    age: int | None = Field(default=None, ge=18, le=120)
+    height_cm: float | None = Field(default=None, ge=100, le=250)
+    weight_kg: float | None = Field(default=None, ge=25, le=400)
+    target_weight_kg: float | None = Field(default=None, ge=25, le=400)
+    equation_coefficient: Literal["female", "male", "not_specified"] = "not_specified"
+    pregnancy: Literal["unknown", "not_applicable", "pregnant_or_breastfeeding"] = "unknown"
+    activity: Literal["unknown", "mostly_seated", "some_activity", "regular_training"] = "unknown"
+    daily_minutes: int | None = Field(default=None, ge=1, le=240)
+    monthly_budget_sek: float | None = Field(default=None, ge=0, le=100000)
+    city: str = Field(default="", max_length=100)
+    timezone: str = "Europe/Stockholm"
+
+    @model_validator(mode="after")
+    def valid_timezone(self):
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("Choose a supported timezone.") from None
+        return self
+
+
+class GoalEdit(RevisionRequest):
+    goals: list[Literal["skin", "hair", "body"]] = Field(min_length=1, max_length=3)
+    target_date: str = Field(default="", max_length=10)
+
+    @model_validator(mode="after")
+    def valid_goals(self):
+        if len(set(self.goals)) != len(self.goals):
+            raise ValueError("Choose distinct goals.")
+        if self.target_date:
+            date.fromisoformat(self.target_date)
+        return self
+
+
+class BodyEdit(RevisionRequest):
+    body: BodyContext
+
+
+class ProgressRequest(RevisionRequest):
+    meal_key: str | None = Field(default=None, max_length=30)
+    action_id: str | None = Field(default=None, max_length=80)
+    status: Literal["not_attempted", "inconsistent", "followed", "improved", "unchanged", "worse"]
+    note: str = Field(default="", max_length=1000)
+    observed_on: date
+
+
+class ProgressEntry(Model):
+    meal_key: str | None = None
+    id: str
+    plan_version: int
+    action_id: str | None
+    status: Literal["not_attempted", "inconsistent", "followed", "improved", "unchanged", "worse"]
+    note: str
+    observed_on: date
+    recorded_at: datetime
+
+
+class MealIngredient(Model):
+    food_id: int = Field(ge=1)
+    grams: float = Field(gt=0, le=2000)
+
+
+class MealNutrition(Model):
+    available: bool
+    kcal: float | None
+    protein_g: float | None
+    missing_food_ids: list[int]
+    source: str
+
+
+class Meal(Model):
+    day: int = Field(ge=0, le=6)
+    slot: Literal["breakfast", "lunch", "dinner", "snack"]
+    title: str = Field(min_length=1, max_length=150)
+    ingredients: list[MealIngredient] = Field(min_length=1, max_length=12)
+    instructions: str = Field(min_length=1, max_length=1000)
+    preparation_minutes: int = Field(ge=0, le=180)
+    substitution_note: str = Field(max_length=400)
+    storage: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def recompute_saved_totals(cls, value):
+        if isinstance(value, dict):
+            value = {key: item for key, item in value.items() if key != "nutrition"}
+        return value
+
+    @computed_field
+    @property
+    def nutrition(self) -> MealNutrition:
+        from app.nutrition import meal_totals
+
+        return MealNutrition(**meal_totals(self.ingredients))
+
+
+class MealSwap(RevisionRequest):
+    day: int = Field(ge=0, le=6)
+    slot: Literal["breakfast", "lunch", "dinner", "snack"]
+    source_day: int = Field(ge=0, le=6)
+    source_slot: Literal["breakfast", "lunch", "dinner", "snack"]
+
+
+class PrepSession(Model):
+    day: int = Field(ge=0, le=6)
+    minutes: int = Field(ge=0, le=180)
+    title: str = Field(min_length=1, max_length=150)
+    steps: list[str] = Field(min_length=1, max_length=12)
+    storage: str = Field(min_length=1, max_length=1000)
+    meal_keys: list[str] = Field(
+        default_factory=list,
+        max_length=28,
+        description="Optional exact references to actual meals: '<day>-<slot>', day 0=Monday through 6=Sunday, slot breakfast/lunch/dinner/snack; e.g. '0-lunch'. Never use recipe titles or weekday names. Use [] if the linkage is uncertain.",
+    )
+
+
+class NutritionPlan(Model):
+    priority: Literal["meal_first", "balanced", "activity_first"] = "balanced"
+    focus: str = Field(min_length=1, max_length=1000)
+    energy_strategy: Literal["balanced", "deficit_discussion", "clinician_review"]
+    energy_explanation: str = Field(min_length=1, max_length=1500)
+    meal_pattern: str = Field(min_length=1, max_length=1500)
+    portion_approach: str = Field(min_length=1, max_length=1500)
+    substitutions: list[str] = Field(default_factory=list, max_length=8)
+    prep_sessions: list[PrepSession] = Field(default_factory=list, max_length=7)
+
+
+class WeeklyProgramme(Model):
+    weeks: int = Field(ge=1, le=12)
+    outcome: str = Field(min_length=1, max_length=1000)
+    deadline_assessment: str = Field(min_length=1, max_length=2000)
+    schedule_notes: str = Field(min_length=1, max_length=2000)
+    success_signals: list[str] = Field(min_length=1, max_length=8)
+    review_rule: str = Field(min_length=1, max_length=1500)
+    training_included: bool
 
 
 class Plan(Model):
+    nutrition: NutritionPlan | None = None
+    programme: WeeklyProgramme | None = None
     summary: str = Field(min_length=1, max_length=2000)
+    priority: str = Field(default="", max_length=400)
+    deferred: list[str] = Field(default_factory=list, max_length=6)
+    milestones: list[Milestone] = Field(default_factory=list, max_length=6)
+    meals: list[Meal] = Field(default_factory=list, max_length=28)
     reported: list[str] = Field(max_length=8)
     hypotheses: list[str] = Field(max_length=8)
     uncertainties: list[str] = Field(max_length=8)
@@ -262,6 +481,9 @@ class Plan(Model):
     def unique_actions(self):
         if len({action.id for action in self.actions}) != len(self.actions):
             raise ValueError("Action IDs must be unique.")
+        slots = [(meal.day, meal.slot) for meal in self.meals]
+        if len(set(slots)) != len(slots):
+            raise ValueError("Each day and meal slot must be unique.")
         return self
 
 
@@ -396,7 +618,255 @@ class Event(Model):
     question_snapshot: Question | None = None
 
 
+class GoalQuestion(Model):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    key: Literal[
+        "baseline",
+        "goal",
+        "timeline",
+        "experience",
+        "schedule",
+        "nutrition",
+        "approach",
+        "services",
+        "health",
+        "constraints",
+        "routine",
+        "products",
+        "progress",
+        "other",
+    ]
+    text: str = Field(min_length=1, max_length=300)
+    why: str = Field(max_length=300)
+    choices: list[str] = Field(default_factory=list, max_length=6)
+    fields: list[
+        Literal["height_cm", "weight_kg", "age", "daily_minutes", "monthly_budget_sek"]
+    ] = Field(default_factory=list, max_length=3)
+    multiple: bool = False
+    photo_mode: Literal["none", "products", "skin", "hair"] = "none"
+    text_fields: list[Literal["goal_outcome", "target_date"]] = Field(
+        default_factory=list, max_length=2
+    )
+
+
+class RunStep(Model):
+    id: str
+    label: str
+    status: Literal["working", "done", "failed"]
+
+
+class ProviderTiming(Model):
+    role: Literal["coach", "planner", "reviewer", "researcher"]
+    elapsed_ms: float = Field(ge=0)
+    input_chars: int = Field(ge=0)
+    output_chars: int = Field(ge=0)
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    completed: bool
+
+
+class RunPerformance(Model):
+    total_ms: float = Field(ge=0)
+    storage_ms: float = Field(ge=0)
+    storage_operations: int = Field(ge=0)
+    context_ms: float = Field(ge=0)
+    calls: list[ProviderTiming] = Field(default_factory=list)
+
+
+class GoalRun(Model):
+    performance: RunPerformance | None = None
+    id: str
+    status: Literal["running", "complete", "cancelled", "failed"]
+    started_at: datetime
+    steps: list[RunStep] = Field(default_factory=list)
+    error: str = ""
+
+
+class WorkingMessage(Model):
+    role: Literal["user", "assistant"]
+    text: str = Field(max_length=4000)
+
+
+class IdeaFeedback(Model):
+    action: Action
+    choice: Literal["keep", "remove"]
+
+
+class IdeaEdit(Model):
+    base: Plan
+    action_id: str
+    intent: Literal["details", "improve"]
+
+
+class IdeaChoiceRequest(RevisionRequest):
+    action_id: str = Field(min_length=1, max_length=80)
+    choice: Literal["keep", "remove", "clear"]
+
+
+DiscoveryTopic = Literal[
+    "nutrition",
+    "body_composition",
+    "skin_options",
+    "laser_skin",
+    "pigmentation",
+    "hair_options",
+    "scalp_care",
+    "hair_removal",
+]
+SearchCity = Literal[
+    "",
+    "Stockholm",
+    "Göteborg",
+    "Malmö",
+    "Uppsala",
+    "Västerås",
+    "Örebro",
+    "Linköping",
+    "Helsingborg",
+    "Jönköping",
+    "Lund",
+    "Umeå",
+    "Luleå",
+]
+
+
+class AlternativeMethod(Model):
+    title: str = Field(min_length=1, max_length=150)
+    approach: Literal["nutrition", "activity", "home_routine", "professional"]
+    rationale: str = Field(min_length=1, max_length=1500)
+    suitability: Literal["consider", "assessment_required", "not_recommended"]
+    evidence_summary: str = Field(min_length=1, max_length=2000)
+    risks: list[str] = Field(max_length=8)
+    practical_next_step: str = Field(min_length=1, max_length=1200)
+    evidence_ids: list[str] = Field(max_length=8)
+
+
+class MethodSynthesis(Model):
+    summary: str = Field(min_length=1, max_length=1800)
+    alternatives: list[AlternativeMethod] = Field(max_length=6)
+    limitations: list[str] = Field(max_length=8)
+
+
+class MethodReport(Model):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    topic: DiscoveryTopic
+    city: SearchCity = ""
+    created_at: datetime
+    status: Literal["ready", "limited", "unavailable"]
+    summary: str
+    alternatives: list[AlternativeMethod] = Field(default_factory=list)
+    evidence: list[ResearchSource] = Field(default_factory=list)
+    listings: list[ResearchSource] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    browse_url: str
+    services_searched: bool = False
+
+
+class DiscoveryRequest(Model):
+    topic: DiscoveryTopic
+    city: SearchCity = ""
+    services: bool = True
+
+
+class WorkspaceDraft(Plan):
+    reply: str = Field(min_length=1, max_length=1800)
+    facts: list[FactCandidate] = Field(max_length=12)
+    conflicts: list[str] = Field(max_length=6)
+    clarification: GoalQuestion | None = None
+
+
+class GoalWorkspace(Model):
+    title: str = Field(max_length=120)
+    objective: str = Field(max_length=2000)
+    phase: Literal["idle", "needs_input", "running", "review", "ready", "error", "cancelled"] = (
+        "idle"
+    )
+    reply: str = ""
+    question: GoalQuestion | None = None
+    answered_keys: list[str] = Field(default_factory=list)
+    messages: list[WorkingMessage] = Field(default_factory=list)
+    run: GoalRun | None = None
+    pending_draft: Plan | None = None
+    review_draft: WorkspaceDraft | None = None
+    idea_feedback: list[IdeaFeedback] = Field(default_factory=list, max_length=100)
+    idea_edit: IdeaEdit | None = None
+    assessment_complete: bool = False
+    assessment_count: int = Field(default=0, ge=0, le=6)
+    outcome: str = ""
+    timeline_note: str = ""
+    method_reports: list[MethodReport] = Field(default_factory=list, max_length=8)
+    discovery_request: DiscoveryRequest | None = None
+
+
+class AssessmentDecision(Model):
+    reply: str = Field(min_length=1, max_length=800)
+    question: GoalQuestion | None
+    facts: list[FactCandidate] = Field(max_length=12)
+    conflicts: list[str] = Field(max_length=6)
+
+
+class CreateGoal(Model):
+    message: str = Field(min_length=1, max_length=2000)
+    consent: Literal[True]
+    goals: list[Literal["skin", "hair", "body"]] = Field(default_factory=list, max_length=3)
+    reuse_profile: bool = True
+
+
+class WorkRequest(RevisionRequest):
+    message: str = Field(default="", max_length=2000)
+    question_id: str | None = None
+    choices: list[str] = Field(default_factory=list, max_length=6)
+    values: dict[str, float] = Field(default_factory=dict)
+    skipped: bool = False
+    photos: list[str] = Field(default_factory=list, max_length=3)
+    photo_consent: bool = False
+    action: Literal["continue", "plan", "retry", "assess", "research"] = "continue"
+    action_id: str | None = Field(default=None, max_length=80)
+    idea_intent: Literal["details", "improve"] | None = None
+    text_values: dict[str, str] = Field(default_factory=dict)
+    research_topic: DiscoveryTopic | None = None
+    research_city: SearchCity = ""
+    research_services: bool = True
+
+
+BodyArea = Literal[
+    "waist", "abdomen", "chest", "shoulders", "arms", "back", "glutes", "thighs", "calves"
+]
+
+
+class RegionalBodyGoal(Model):
+    area: BodyArea
+    intention: Literal[
+        "reduce_size", "build_muscle", "strength", "definition", "other", "unsure"
+    ] = "unsure"
+    note: str = Field(default="", max_length=300)
+
+
+class BodyGoals(Model):
+    direction: Literal["reduce_fat", "build_muscle", "recomposition", "maintain", "unsure"] = (
+        "unsure"
+    )
+    areas: list[RegionalBodyGoal] = Field(default_factory=list, max_length=9)
+    priority_area: BodyArea | None = None
+
+    @model_validator(mode="after")
+    def valid_areas(self):
+        areas = [goal.area for goal in self.areas]
+        if len(areas) != len(set(areas)):
+            raise ValueError("Select each body area once.")
+        if self.priority_area and self.priority_area not in areas:
+            raise ValueError("Priority must be a selected body area.")
+        if any(goal.intention == "other" and not goal.note.strip() for goal in self.areas):
+            raise ValueError("Describe the intended change when choosing other.")
+        return self
+
+
+class BodyGoalsEdit(RevisionRequest):
+    body_goals: BodyGoals
+
+
 class Journey(Model):
+    body_goals: BodyGoals = Field(default_factory=BodyGoals)
     revision: int = 0
     context: Context
     preferences: Preferences | None = None
@@ -416,6 +886,11 @@ class Journey(Model):
     profile_conflicts: list[str] = Field(default_factory=list)
     workflow: WorkflowState = Field(default_factory=WorkflowState)
     research_intent: ResearchIntent | None = None
+    body: BodyContext = Field(default_factory=BodyContext)
+    progress: list[ProgressEntry] = Field(default_factory=list)
+    profile_confirmed_revision: int | None = None
+    memory_consolidated: bool = False
+    workspace: GoalWorkspace | None = None
 
 
 class SessionCreated(Model):
